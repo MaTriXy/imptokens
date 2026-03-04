@@ -1,5 +1,7 @@
 /target
-video/
-*.mp4
+video/*
+!video/out/
+video/out/*
+!video/out/Imptokens.mp4
 .claude/
 .codex/
