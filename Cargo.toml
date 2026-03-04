@@ -1,0 +1,21 @@
+[package]
+name = "imptokens"
+version = "0.1.0"
+edition = "2021"
+description = "Fast logprob-based token compression using llama.cpp and Metal"
+
+[[bin]]
+name = "imptokens"
+path = "src/main.rs"
+
+[lib]
+name = "imptokens"
+path = "src/lib.rs"
+
+[dependencies]
+llama-cpp-2 = { version = "0.1", features = ["metal"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+hf-hub = "0.3"

@@ -1,0 +1,5 @@
+/target
+video/
+*.mp4
+.claude/
+.codex/
