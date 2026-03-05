@@ -1,7 +1,7 @@
 use std::io::{self, Read};
 use std::path::PathBuf;
 
-use anyhow::{Context, bail};
+use anyhow::{Context, anyhow, bail};
 use clap::{Parser, ValueEnum};
 
 /// 100 MB — hard cap on stdin to prevent OOM from unbounded input.
@@ -68,6 +68,12 @@ struct Cli {
     /// Minimum estimated token count before compressing in hook mode.
     #[arg(long, default_value_t = 500)]
     hook_threshold: usize,
+
+    // ── Claude Code setup ─────────────────────────────────────────────────────
+    /// Wire imptokens into Claude Code as a UserPromptSubmit hook.
+    /// Writes the hook entry to ~/.claude/settings.json and prints instructions.
+    #[arg(long)]
+    setup_claude: bool,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -81,6 +87,10 @@ enum OutputFormat {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    if cli.setup_claude {
+        return run_setup_claude(&cli);
+    }
 
     if cli.hook_mode {
         return run_hook(&cli);
@@ -237,6 +247,94 @@ fn download_model(repo_id: &str, filename: &str) -> anyhow::Result<PathBuf> {
     let hf_repo = api.model(repo_id.to_string());
     let path = hf_repo.get(filename).with_context(|| format!("failed to download {filename}"))?;
     Ok(path)
+}
+
+fn home_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    { std::env::var("USERPROFILE").ok().map(PathBuf::from) }
+    #[cfg(not(windows))]
+    { std::env::var("HOME").ok().map(PathBuf::from) }
+}
+
+// ─── Claude Code setup ────────────────────────────────────────────────────────
+
+fn run_setup_claude(cli: &Cli) -> anyhow::Result<()> {
+    // Use the running binary's path so the hook works regardless of PATH.
+    let binary = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("imptokens"));
+    let keep_ratio = cli.keep_ratio.unwrap_or(0.6);
+    // Quote the path so it survives spaces (e.g. /Users/John Doe/.local/bin/imptokens).
+    let command = format!(
+        "\"{}\" --hook-mode --hook-threshold {} --keep-ratio {}",
+        binary.display(),
+        cli.hook_threshold,
+        keep_ratio,
+    );
+
+    let home = home_dir().ok_or_else(|| anyhow!("cannot determine home directory"))?;
+    let settings_path = home.join(".claude").join("settings.json");
+
+    // Read existing settings, or start fresh.
+    let mut settings: serde_json::Value = if settings_path.exists() {
+        let raw = std::fs::read_to_string(&settings_path)
+            .context("failed to read ~/.claude/settings.json")?;
+        serde_json::from_str(&raw).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // Bail early if already configured.
+    let already = settings
+        .pointer("/hooks/UserPromptSubmit")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter().any(|e| {
+                e.pointer("/hooks/0/command")
+                    .and_then(|c| c.as_str())
+                    .map(|c| c.contains("imptokens"))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+
+    if already {
+        println!("imptokens hook is already present in {}", settings_path.display());
+        println!("Remove it manually and re-run to reconfigure.");
+        return Ok(());
+    }
+
+    // Insert hook entry.
+    let hook_entry = serde_json::json!({
+        "matcher": "",
+        "hooks": [{ "type": "command", "command": command }]
+    });
+
+    let hooks = settings
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("settings.json is not a JSON object"))?
+        .entry("hooks")
+        .or_insert(serde_json::json!({}));
+
+    hooks
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("hooks is not a JSON object"))?
+        .entry("UserPromptSubmit")
+        .or_insert(serde_json::json!([]))
+        .as_array_mut()
+        .ok_or_else(|| anyhow!("UserPromptSubmit is not an array"))?
+        .push(hook_entry);
+
+    std::fs::create_dir_all(settings_path.parent().unwrap())
+        .context("failed to create ~/.claude directory")?;
+    std::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)
+        .context("failed to write ~/.claude/settings.json")?;
+
+    println!("✓ Claude Code hook configured");
+    println!("  File:      {}", settings_path.display());
+    println!("  Threshold: {} estimated tokens", cli.hook_threshold);
+    println!("  Ratio:     {:.0}% of tokens kept", keep_ratio * 100.0);
+    println!();
+    println!("Restart Claude Code for changes to take effect.");
+    Ok(())
 }
 
 fn read_input(cli: &Cli) -> anyhow::Result<String> {

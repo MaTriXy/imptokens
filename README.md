@@ -1,8 +1,8 @@
 <h1 align="center">imptokens</h1>
 
 <p align="center">
-  <strong>Semantic token compression for LLM context windows</strong><br/>
-  Fast, local, GPU-accelerated (llama.cpp + Rust)
+  <strong>Cut your Claude / GPT token costs by 30–60%.</strong><br/>
+  Runs 100% locally. No data leaves your machine. No API. No subscription.
 </p>
 
 <p align="center">
@@ -12,7 +12,20 @@
   <a href="https://github.com/nimhar/imptokens/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/nimhar/imptokens?style=flat-square&logo=github&label=Stars"></a>
 </p>
 
-`imptokens` runs a small local model to score each token by surprise (log-probability), keeps the informative tokens, and drops predictable filler. In practice this cuts context size by 30-70% while preserving task-critical meaning.
+```bash
+curl -fsSL https://raw.githubusercontent.com/nimhar/imptokens/main/install.sh | bash
+```
+
+Then wire it into Claude Code once — and never think about it again:
+
+```bash
+imptokens --setup-claude
+# ✓ Claude Code hook configured
+#   Every prompt over 500 tokens is automatically compressed before it reaches the model.
+#   Restart Claude Code to activate.
+```
+
+`imptokens` uses a small local model to score every token by information density, keeps the signal, and drops predictable filler. In practice this cuts context size by 30–70% with no meaningful loss in answer quality.
 
 ```bash
 git diff HEAD~5 | imptokens --keep-ratio 0.5 --stats
@@ -92,30 +105,39 @@ echo '{"prompt":"...very long prompt..."}' | imptokens --hook-mode --hook-thresh
 ## Quick start
 
 ```bash
-git clone https://github.com/nimhar/imptokens.git
-cd imptokens
-bash install.sh
+# Install (auto-detects GPU, no Rust required)
+curl -fsSL https://raw.githubusercontent.com/nimhar/imptokens/main/install.sh | bash
 
-# try it
+# Wire into Claude Code — one time, then forget about it
+imptokens --setup-claude
+
+# Try it
 echo "Your long text goes here" | imptokens --keep-ratio 0.5 --stats
 ```
 
-`install.sh` builds the binary, installs it into `~/.local/bin`, and can optionally wire Claude Code hook helpers.
-
 ## Installation
 
-### Prerequisites
-
-- Rust 1.70+
-- A supported GPU (optional but recommended)
+### One-liner (recommended)
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+curl -fsSL https://raw.githubusercontent.com/nimhar/imptokens/main/install.sh | bash
 ```
 
-### Build manually
+- Downloads a pre-built binary for your platform (no Rust needed)
+- Falls back to compiling from source if no binary is available
+- Auto-detects GPU backend: Metal → CUDA → Vulkan → CPU
+- Installs to `~/.local/bin`
 
-Pick the feature that matches your hardware:
+### Homebrew (macOS)
+
+```bash
+brew tap nimhar/imptokens https://github.com/nimhar/imptokens
+brew install imptokens
+```
+
+### Build from source
+
+Requires Rust 1.70+:
 
 ```bash
 # macOS Apple Silicon (Metal)
@@ -124,15 +146,11 @@ cargo build --release --features metal
 # NVIDIA GPU — requires CUDA toolkit installed
 cargo build --release --features cuda
 
-# Vulkan — cross-platform (Windows, Linux, etc.)
+# Cross-platform Vulkan (Windows, Linux, etc.)
 cargo build --release --features vulkan
 
 # CPU-only fallback (any platform, no GPU required)
 cargo build --release
-```
-
-```bash
-./target/release/imptokens --help
 ```
 
 The default model is downloaded once and cached at `~/.cache/huggingface/hub/`.
@@ -209,6 +227,12 @@ Use one strategy at a time.
 | `--hook-mode` | `false` | Claude Code UserPromptSubmit hook mode |
 | `--hook-threshold <N>` | `500` | Min estimated tokens before compression |
 
+### Claude Code setup
+
+| Flag | Description |
+|---|---|
+| `--setup-claude` | Write hook config to `~/.claude/settings.json` |
+
 ## How it works
 
 `imptokens` runs a small local model to assign an **information-density score** to every token in your input. Tokens that carry signal are kept. Tokens that are structurally predictable — boilerplate, repeated patterns, filler — are dropped.
@@ -277,58 +301,85 @@ The KV cache is allocated proportional to input size. At 128K tokens it requires
 
 ## Claude Code integration
 
-- Claude Code hooks docs: https://docs.anthropic.com/en/docs/claude-code/hooks
-- RTL/RTK platform (complementary): https://www.rtk-ai.app/
+### Automatic compression for every prompt (recommended)
 
-### Clipboard pre-compression
+One command wires `imptokens` into Claude Code as a `UserPromptSubmit` hook. Every prompt above the threshold is silently compressed before it reaches the model — you don't change anything about how you work.
 
 ```bash
-# 1) Copy text
+imptokens --setup-claude
+```
+
+```
+✓ Claude Code hook configured
+  File:      ~/.claude/settings.json
+  Threshold: 500 estimated tokens
+  Ratio:     60% of tokens kept
+
+Restart Claude Code for changes to take effect.
+```
+
+What it adds to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [{
+      "matcher": "",
+      "hooks": [{ "type": "command", "command": "/path/to/imptokens --hook-mode --hook-threshold 500 --keep-ratio 0.6" }]
+    }]
+  }
+}
+```
+
+Adjust the threshold and ratio:
+
+```bash
+# Only compress very large prompts, keep 70%
+imptokens --setup-claude --hook-threshold 1000 --keep-ratio 0.7
+
+# Aggressive: compress anything over 200 tokens, keep 50%
+imptokens --setup-claude --hook-threshold 200 --keep-ratio 0.5
+```
+
+> **Latency note:** the hook adds ~2–4s on Apple Silicon (model cold-start). Only triggers above your threshold.
+
+### Clipboard pre-compression (macOS)
+
+```bash
+# 1) Copy text to clipboard
 compress-paste        # default keep-ratio 0.5
 compress-paste 0.3    # more aggressive
-# 2) Paste compressed text into Claude
+# 2) Paste into Claude — already compressed
 ```
 
-### Automatic bash output compression
-
-`imptokens` does not require RTK. RTK support is an optional integration.
-
-- Standalone (no RTK): pipe any command through `compress-if-large`.
-- RTK flow: `install.sh` patches `~/.claude/hooks/rtk-rewrite.sh` only if that file exists.
-
-Standalone example:
+### Pipe any command output through compression
 
 ```bash
-cat bigfile.py | compress-if-large
-git diff HEAD~5 | compress-if-large
+cat bigfile.py   | compress-if-large
+git diff HEAD~5  | compress-if-large
+pytest 2>&1      | compress-if-large
 ```
 
-Optional RTK hook example:
-
-```text
-cat bigfile.py    -> rtk read bigfile.py | compress-if-large
-git diff HEAD~5   -> rtk git diff HEAD~5 | compress-if-large
-git log --stat    -> rtk git log --stat  | compress-if-large
-```
-
-Tune behavior in your shell config:
+Tune behavior:
 
 ```bash
-export COMPRESS_MIN_CHARS=2000
-export COMPRESS_RATIO=0.5
+export COMPRESS_MIN_CHARS=2000   # only compress if > 2000 chars
+export COMPRESS_RATIO=0.5        # keep 50% of tokens
 ```
 
 ### Slash command
 
-`install.sh` can register `/compress-paste` under `~/.claude/commands/compress-paste.md`.
+```bash
+/compress-paste          # compress clipboard, registered by install.sh
+```
 
-### Hook mode (advanced)
+### Hook mode (raw API)
 
 ```bash
 echo '{"prompt":"...long text..."}' | imptokens --hook-mode --hook-threshold 500
 ```
 
-Hook mode returns hook JSON with compressed prompt text when the estimated input token count exceeds threshold.
+- Claude Code docs: https://docs.anthropic.com/en/docs/claude-code/hooks
 
 ## Model guide
 

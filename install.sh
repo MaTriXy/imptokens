@@ -1,12 +1,22 @@
 #!/usr/bin/env bash
 # imptokens installer
-# Builds the binary, installs helpers, and optionally wires up Claude Code hooks.
+# Builds or downloads the binary, installs helpers, and optionally wires Claude Code hooks.
+#
+# One-liner usage (non-interactive, auto-detects GPU):
+#   curl -fsSL https://raw.githubusercontent.com/nimhar/imptokens/main/install.sh | bash
+#
+# Interactive usage:
+#   bash install.sh
+#
+# Flags:
+#   -y / --yes   Skip all prompts (same as non-interactive)
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-install.sh}")" 2>/dev/null && pwd || pwd)"
 BIN_DIR="${HOME}/.local/bin"
-SETTINGS="${HOME}/.claude/settings.json"
 BINARY="imptokens"
+REPO="nimhar/imptokens"
+VERSION="latest"
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -15,20 +25,28 @@ ok()   { echo -e "${GREEN}✓${RESET} $*"; }
 warn() { echo -e "${YELLOW}⚠${RESET}  $*"; }
 die()  { echo -e "${RED}✗${RESET} $*" >&2; exit 1; }
 
-# ── 1. Check Rust ─────────────────────────────────────────────────────────────
-echo -e "\n${BOLD}imptokens installer${RESET}\n"
+# ── Non-interactive detection ─────────────────────────────────────────────────
+# Auto-detect when piped (curl | bash) or when -y flag is passed.
+INTERACTIVE=true
+for arg in "$@"; do
+  case "$arg" in -y|--yes|--non-interactive) INTERACTIVE=false ;; esac
+done
+[ ! -t 0 ] && INTERACTIVE=false   # stdin is not a tty (piped)
+[ ! -t 1 ] && INTERACTIVE=false   # stdout is not a tty (piped)
 
-if ! command -v cargo &>/dev/null; then
-  if [[ -f "$HOME/.cargo/env" ]]; then
-    # shellcheck source=/dev/null
-    source "$HOME/.cargo/env"
+prompt_yn() {
+  # Usage: prompt_yn "Question?" default_answer
+  # Returns 0 (yes) or 1 (no)
+  local question="$1" default="${2:-n}"
+  if ! $INTERACTIVE; then
+    [[ "$default" =~ ^[Yy]$ ]] && return 0 || return 1
   fi
-fi
+  read -r -p "$question [y/N] " ans
+  [[ "$ans" =~ ^[Yy]$ ]]
+}
 
-if ! command -v cargo &>/dev/null; then
-  die "Rust not found. Install from https://rustup.rs/ then re-run this script."
-fi
-ok "Rust $(rustc --version | cut -d' ' -f2)"
+# ── 1. Banner ─────────────────────────────────────────────────────────────────
+echo -e "\n${BOLD}imptokens installer${RESET}\n"
 
 # ── 2. Detect GPU backend ─────────────────────────────────────────────────────
 detect_feature() {
@@ -45,25 +63,69 @@ detect_feature() {
 
 GPU_FEATURE="$(detect_feature)"
 if [[ -n "$GPU_FEATURE" ]]; then
-  FEATURE_FLAG="--features $GPU_FEATURE"
-  ok "GPU backend selected: $GPU_FEATURE"
+  ok "GPU backend detected: $GPU_FEATURE"
 else
-  FEATURE_FLAG=""
-  warn "No GPU backend detected — building CPU-only (slower inference)."
-  warn "To enable CUDA: install the CUDA toolkit and re-run this script."
-  warn "To enable Vulkan: install Vulkan drivers and re-run this script."
+  warn "No GPU backend detected — will build/install CPU-only binary (slower inference)."
 fi
 
-# ── 3. Build ──────────────────────────────────────────────────────────────────
-echo "Building release binary (this takes ~2 min on first run)…"
-cd "$SCRIPT_DIR"
-# shellcheck disable=SC2086
-cargo build --release --quiet $FEATURE_FLAG
-ok "Binary built → ${SCRIPT_DIR}/target/release/${BINARY}"
+# ── 3. Get the binary ─────────────────────────────────────────────────────────
+OS="$(uname -s)"    # Darwin | Linux
+ARCH="$(uname -m)"  # arm64 | x86_64
+ARTIFACT="${BINARY}-${OS}-${ARCH}"
+RELEASE_URL="https://github.com/${REPO}/releases/${VERSION}/download/${ARTIFACT}"
+
+# Use a tmpdir for the downloaded/built binary so we don't pollute cwd.
+WORK_DIR="$(mktemp -d)"
+trap 'rm -rf "$WORK_DIR"' EXIT
+BUILT_BINARY="${WORK_DIR}/${BINARY}"
+
+# Try pre-built binary first (fast, no Rust required).
+download_binary() {
+  echo "Trying pre-built binary from GitHub Releases…"
+  if curl -fsSL "$RELEASE_URL" -o "$BUILT_BINARY"; then
+    chmod +x "$BUILT_BINARY"
+    ok "Downloaded pre-built binary (${OS}/${ARCH})"
+    return 0
+  fi
+  return 1
+}
+
+# Fall back to compiling from source.
+build_from_source() {
+  # Must be run from the repo root (not when piped via curl).
+  if [[ ! -f "${SCRIPT_DIR}/Cargo.toml" ]]; then
+    die "Cannot build from source: Cargo.toml not found in ${SCRIPT_DIR}.\n  Either download the repo first:\n    git clone https://github.com/${REPO}.git && cd imptokens && bash install.sh\n  Or wait for a pre-built binary at: https://github.com/${REPO}/releases"
+  fi
+
+  # Ensure Rust is available.
+  if ! command -v cargo &>/dev/null; then
+    if [[ -f "$HOME/.cargo/env" ]]; then
+      # shellcheck source=/dev/null
+      source "$HOME/.cargo/env"
+    fi
+  fi
+  if ! command -v cargo &>/dev/null; then
+    die "Rust not found. Install from https://rustup.rs/ and re-run."
+  fi
+
+  ok "Rust $(rustc --version | cut -d' ' -f2) — building from source (~2 min on first run)…"
+  local feature_flag=""
+  [[ -n "$GPU_FEATURE" ]] && feature_flag="--features $GPU_FEATURE"
+  cd "$SCRIPT_DIR"
+  # shellcheck disable=SC2086
+  cargo build --release --quiet $feature_flag
+  cp "target/release/${BINARY}" "$BUILT_BINARY"
+  ok "Binary built → ${BUILT_BINARY}"
+}
+
+if ! download_binary; then
+  warn "Pre-built binary not available for ${OS}/${ARCH} — building from source."
+  build_from_source
+fi
 
 # ── 4. Install binary ─────────────────────────────────────────────────────────
 mkdir -p "$BIN_DIR"
-cp "target/release/${BINARY}" "${BIN_DIR}/${BINARY}"
+cp "$BUILT_BINARY" "${BIN_DIR}/${BINARY}"
 ok "Installed → ${BIN_DIR}/${BINARY}"
 
 # ── 5. Install helpers ────────────────────────────────────────────────────────
@@ -86,8 +148,9 @@ SCRIPT
 chmod +x "${BIN_DIR}/compress-if-large"
 ok "Installed → ${BIN_DIR}/compress-if-large"
 
-# compress-paste: compress clipboard and put it back
-cat > "${BIN_DIR}/compress-paste" << 'SCRIPT'
+# compress-paste: compress clipboard and put it back (macOS only)
+if [[ "$(uname)" == "Darwin" ]]; then
+  cat > "${BIN_DIR}/compress-paste" << 'SCRIPT'
 #!/usr/bin/env bash
 # Compress clipboard content and replace it, ready to paste.
 # Usage: compress-paste [keep-ratio]   (default: 0.5)
@@ -105,54 +168,28 @@ PCT=$(( SAVED * 100 / EST_TOKENS ))
 echo "$COMPRESSED" | pbcopy
 echo "✓ Compressed ~${EST_TOKENS} → ~$(( ${#COMPRESSED} / 4 )) tokens (saved ~${PCT}%). Ready to paste." >&2
 SCRIPT
-chmod +x "${BIN_DIR}/compress-paste"
-ok "Installed → ${BIN_DIR}/compress-paste"
+  chmod +x "${BIN_DIR}/compress-paste"
+  ok "Installed → ${BIN_DIR}/compress-paste"
+fi
 
 # ── 6. PATH check ─────────────────────────────────────────────────────────────
 if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
-  warn "${BIN_DIR} is not in PATH. Add to ~/.zshrc:"
+  warn "${BIN_DIR} is not in PATH. Add to ~/.zshrc or ~/.bashrc:"
   echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
 fi
 
 # ── 7. Claude Code integration (optional) ─────────────────────────────────────
 echo ""
-read -r -p "Set up Claude Code bash-output compression hook? [y/N] " ans_hook
-if [[ "$ans_hook" =~ ^[Yy]$ ]]; then
-  RTK_HOOK="${HOME}/.claude/hooks/rtk-rewrite.sh"
-
-  if [[ ! -f "$RTK_HOOK" ]]; then
-    warn "RTK hook not found at ${RTK_HOOK}. Skipping hook integration."
-    warn "If you install RTK later, re-run install.sh to add compression."
+if prompt_yn "Wire imptokens into Claude Code? (auto-compresses every large prompt)" "n"; then
+  if command -v imptokens &>/dev/null || [[ -x "${BIN_DIR}/${BINARY}" ]]; then
+    "${BIN_DIR}/${BINARY}" --setup-claude && ok "Claude Code hook configured."
   else
-    # Add compress-if-large to RTK hook if not already present
-    if grep -q "compress-if-large" "$RTK_HOOK" 2>/dev/null; then
-      ok "RTK hook already has compress-if-large — nothing to change."
-    else
-      # Insert before "# If no rewrite needed, approve as-is"
-      PATCH='
-# Pipe large-output commands through semantic compression.
-if command -v compress-if-large &>/dev/null; then
-  case "$REWRITTEN" in
-    *"rtk git diff"*|*"rtk git log"*|*"rtk git show"*|\
-    *"rtk read"*|*"rtk curl"*|*"rtk grep"*|*"rtk find"*)
-      REWRITTEN="$REWRITTEN | compress-if-large"
-      ;;
-  esac
-fi'
-      # Use awk to insert before the "If no rewrite" comment
-      awk -v patch="$PATCH" '
-        /^# If no rewrite needed/ { print patch }
-        { print }
-      ' "$RTK_HOOK" > "${RTK_HOOK}.tmp" && mv "${RTK_HOOK}.tmp" "$RTK_HOOK"
-      chmod +x "$RTK_HOOK"
-      ok "RTK hook patched — large outputs will be semantically compressed."
-    fi
+    warn "imptokens not in PATH yet — run 'imptokens --setup-claude' after restarting your shell."
   fi
 fi
 
 echo ""
-read -r -p "Add /compress-paste slash command for Claude Code? [y/N] " ans_slash
-if [[ "$ans_slash" =~ ^[Yy]$ ]]; then
+if prompt_yn "Add /compress-paste slash command for Claude Code?" "n"; then
   mkdir -p "${HOME}/.claude/commands"
   cat > "${HOME}/.claude/commands/compress-paste.md" << 'CMD'
 Run `compress-paste $ARGUMENTS` to compress the current clipboard content and
@@ -169,9 +206,12 @@ echo ""
 echo "  Quick start:"
 echo "    echo 'your text' | imptokens --stats"
 echo "    cat bigfile.txt | imptokens --keep-ratio 0.5"
-echo "    compress-paste                  # compress clipboard"
-echo "    python3 examples/02_token_viz.py --ratio 0.5"
+if [[ "$(uname)" == "Darwin" ]]; then
+  echo "    compress-paste                  # compress clipboard"
+fi
 echo ""
-echo "  In Claude Code CLI, type /compress-paste to compress your clipboard."
+echo "  Wire into Claude Code at any time:"
+echo "    imptokens --setup-claude"
 echo ""
-echo "  Restart Claude Code for hook changes to take effect."
+echo "  Restart your shell or run:  export PATH=\"\$HOME/.local/bin:\$PATH\""
+echo ""
