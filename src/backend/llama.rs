@@ -17,7 +17,11 @@ use llama_cpp_2::{
 
 use super::{Backend, ScoredTokens};
 
-/// llama.cpp backend with Metal acceleration (Apple Silicon).
+/// llama.cpp backend with optional GPU acceleration.
+///
+/// Which GPU backend is compiled in depends on the Cargo feature enabled at
+/// build time (`metal`, `cuda`, or `vulkan`).  Without any feature the binary
+/// runs on CPU only.
 ///
 /// Uses `Box::leak` to give [`LlamaBackend`] a `'static` lifetime so both the
 /// backend guard and the model can coexist in the same struct without fighting
@@ -50,7 +54,8 @@ impl LlamaCppBackend {
 
 impl Backend for LlamaCppBackend {
     fn load(&mut self, model_path: &Path) -> anyhow::Result<()> {
-        // Offload all transformer layers to Metal GPU on macOS.
+        // Offload all transformer layers to the GPU when a backend is compiled in
+        // (Metal, CUDA, Vulkan).  A CPU-only build simply ignores this setting.
         let model_params = LlamaModelParams::default().with_n_gpu_layers(u32::MAX);
         let model = LlamaModel::load_from_file(self.backend, model_path, &model_params)
             .with_context(|| format!("failed to load model from {}", model_path.display()))?;

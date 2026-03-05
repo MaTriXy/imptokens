@@ -30,18 +30,43 @@ if ! command -v cargo &>/dev/null; then
 fi
 ok "Rust $(rustc --version | cut -d' ' -f2)"
 
-# ── 2. Build ──────────────────────────────────────────────────────────────────
+# ── 2. Detect GPU backend ─────────────────────────────────────────────────────
+detect_feature() {
+  if [[ "$(uname)" == "Darwin" ]]; then
+    echo "metal"
+  elif command -v nvcc &>/dev/null || [[ -d /usr/local/cuda ]]; then
+    echo "cuda"
+  elif command -v vulkaninfo &>/dev/null; then
+    echo "vulkan"
+  else
+    echo ""
+  fi
+}
+
+GPU_FEATURE="$(detect_feature)"
+if [[ -n "$GPU_FEATURE" ]]; then
+  FEATURE_FLAG="--features $GPU_FEATURE"
+  ok "GPU backend selected: $GPU_FEATURE"
+else
+  FEATURE_FLAG=""
+  warn "No GPU backend detected — building CPU-only (slower inference)."
+  warn "To enable CUDA: install the CUDA toolkit and re-run this script."
+  warn "To enable Vulkan: install Vulkan drivers and re-run this script."
+fi
+
+# ── 3. Build ──────────────────────────────────────────────────────────────────
 echo "Building release binary (this takes ~2 min on first run)…"
 cd "$SCRIPT_DIR"
-cargo build --release --quiet
+# shellcheck disable=SC2086
+cargo build --release --quiet $FEATURE_FLAG
 ok "Binary built → ${SCRIPT_DIR}/target/release/${BINARY}"
 
-# ── 3. Install binary ─────────────────────────────────────────────────────────
+# ── 4. Install binary ─────────────────────────────────────────────────────────
 mkdir -p "$BIN_DIR"
 cp "target/release/${BINARY}" "${BIN_DIR}/${BINARY}"
 ok "Installed → ${BIN_DIR}/${BINARY}"
 
-# ── 4. Install helpers ────────────────────────────────────────────────────────
+# ── 5. Install helpers ────────────────────────────────────────────────────────
 
 # compress-if-large: transparent compression filter for piped commands
 cat > "${BIN_DIR}/compress-if-large" << 'SCRIPT'
@@ -83,13 +108,13 @@ SCRIPT
 chmod +x "${BIN_DIR}/compress-paste"
 ok "Installed → ${BIN_DIR}/compress-paste"
 
-# ── 5. PATH check ─────────────────────────────────────────────────────────────
+# ── 6. PATH check ─────────────────────────────────────────────────────────────
 if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
   warn "${BIN_DIR} is not in PATH. Add to ~/.zshrc:"
   echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
 fi
 
-# ── 6. Claude Code integration (optional) ─────────────────────────────────────
+# ── 7. Claude Code integration (optional) ─────────────────────────────────────
 echo ""
 read -r -p "Set up Claude Code bash-output compression hook? [y/N] " ans_hook
 if [[ "$ans_hook" =~ ^[Yy]$ ]]; then
@@ -137,7 +162,7 @@ CMD
   ok "Slash command /compress-paste registered."
 fi
 
-# ── 7. Done ───────────────────────────────────────────────────────────────────
+# ── 8. Done ───────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}Installation complete!${RESET}"
 echo ""

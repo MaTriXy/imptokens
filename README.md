@@ -2,12 +2,12 @@
 
 <p align="center">
   <strong>Semantic token compression for LLM context windows</strong><br/>
-  Fast, local, Metal-accelerated (llama.cpp + Rust)
+  Fast, local, GPU-accelerated (llama.cpp + Rust)
 </p>
 
 <p align="center">
   <a href="https://github.com/nimhar/imptokens/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-16a34a"></a>
-  <a href="https://github.com/nimhar/imptokens"><img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-111827"></a>
+  <a href="https://github.com/nimhar/imptokens"><img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-111827"></a>
   <a href="https://www.rust-lang.org/"><img alt="Rust" src="https://img.shields.io/badge/rust-1.70%2B-f97316"></a>
   <a href="https://github.com/nimhar/imptokens/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/nimhar/imptokens?style=flat-square&logo=github&label=Stars"></a>
 </p>
@@ -105,8 +105,8 @@ echo "Your long text goes here" | imptokens --keep-ratio 0.5 --stats
 
 ### Prerequisites
 
-- macOS on Apple Silicon (M1/M2/M3/M4)
 - Rust 1.70+
+- A supported GPU (optional but recommended)
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -114,8 +114,23 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 ### Build manually
 
+Pick the feature that matches your hardware:
+
 ```bash
+# macOS Apple Silicon (Metal)
+cargo build --release --features metal
+
+# NVIDIA GPU — requires CUDA toolkit installed
+cargo build --release --features cuda
+
+# Vulkan — cross-platform (Windows, Linux, etc.)
+cargo build --release --features vulkan
+
+# CPU-only fallback (any platform, no GPU required)
 cargo build --release
+```
+
+```bash
 ./target/release/imptokens --help
 ```
 
@@ -352,7 +367,7 @@ imptokens/
 │   ├── threshold.rs     # fixed_threshold / target_ratio / target_count
 │   └── backend/
 │       ├── mod.rs       # Backend trait
-│       └── llama.rs     # llama.cpp + Metal backend
+│       └── llama.rs     # llama.cpp backend (Metal / CUDA / Vulkan / CPU)
 └── examples/
 ```
 

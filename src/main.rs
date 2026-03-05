@@ -14,7 +14,7 @@ use imptokens::{
 
 // ─── CLI definition ──────────────────────────────────────────────────────────
 
-/// Fast logprob-based token compression (llama.cpp + Metal).
+/// Fast logprob-based token compression (llama.cpp).
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
