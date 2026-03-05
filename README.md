@@ -30,6 +30,7 @@ git diff HEAD~5 | imptokens --keep-ratio 0.5 --stats
 - [CLI reference](#cli-reference)
 - [How it works](#how-it-works)
 - [Quality benchmark](#quality-benchmark)
+- [Performance](#performance)
 - [Claude Code integration](#claude-code-integration)
 - [Model guide](#model-guide)
 - [Examples](#examples)
@@ -210,21 +211,17 @@ Use one strategy at a time.
 
 ## How it works
 
-For each token, `imptokens` asks: "How predictable was this token given the prior context?"
+`imptokens` runs a small local model to assign an **information-density score** to every token in your input. Tokens that carry signal are kept. Tokens that are structurally predictable — boilerplate, repeated patterns, filler — are dropped.
 
-- low logprob (example: `-8.5`) -> surprising -> informative -> keep
-- high logprob (example: `-0.1`) -> predictable -> lower information density -> drop
-
-Example:
+The scoring is context-aware: the same word can be high-value in one position and redundant in another, depending on what surrounds it. This is what separates it from keyword filtering or stopword removal, which are context-blind.
 
 ```text
 Input:   The model predicts the next token. The model predicts the next word.
-logprob: BOS  -9.4   -5.1  -1.4 -6.2 -7.7  -1.5 -1.9   -1.8  -0.2 -0.3 -2.1
 kept?:    Y     Y      Y     Y    Y    Y      Y    Y      Y     N    N    Y
 Output:  The model predicts the next token. The model predicts word.
 ```
 
-The second sentence is mostly predictable repetition, so only the novel ending is retained.
+The second sentence is mostly predictable repetition, so only the novel ending is retained. The scoring runs in a single local forward pass — no generation, no sampling, no network calls.
 
 ## Quality benchmark
 
@@ -248,6 +245,35 @@ Run locally:
 python3 examples/03_quality_benchmark.py
 python3 examples/02_token_viz.py --ratio 0.5
 ```
+
+## Performance
+
+`imptokens` only runs a single forward pass (no generation) so throughput is dominated by prompt-processing speed, which is the fast path in llama.cpp.
+
+### Tokens per second (Llama 3.2 1B Q4\_K\_M)
+
+| Hardware | Estimated throughput |
+|---|---|
+| Apple M2 / M3 (Metal) | ~2,000–4,000 tok/s |
+| Apple M1 (Metal) | ~1,000–2,000 tok/s |
+| NVIDIA RTX 3090 (CUDA) | ~3,000–6,000 tok/s |
+| CPU-only (modern laptop) | ~200–500 tok/s |
+
+### Wall-clock time for common input sizes (Apple M2, Metal)
+
+| Input | Tokens | Time |
+|---|---:|---|
+| Typical diff | ~2K | ~0.5–1s |
+| Large diff / log | ~10K | ~2–5s |
+| Full source file | ~30K | ~7–15s |
+| Long document | ~50K | ~12–25s |
+| Model context limit | ~128K | ~30–65s |
+
+> **Note:** the default model (Llama 3.2 1B) supports up to 128K tokens. Inputs beyond that require chunking — see roadmap.
+
+### KV cache memory at scale
+
+The KV cache is allocated proportional to input size. At 128K tokens it requires ~2–4 GB of VRAM depending on the model. A 1M-token input would require ~32 GB — not feasible on consumer hardware today without chunking.
 
 ## Claude Code integration
 
@@ -375,11 +401,12 @@ imptokens/
 
 ## Roadmap
 
-- Streaming mode (`--stream`) for chunked large inputs
-- Auto-chunking beyond model context limits
-- CoreML backend exploration for Apple Neural Engine
-- JSON/JSONL selective field compression
-- Integrations: Cursor, VS Code, Neovim, GitHub Actions
+- **Auto-chunking for large inputs** — sliding-window chunking with overlap to support inputs beyond the model's context limit (targeting 1M+ tokens via chunk-and-merge)
+- **Persistent daemon mode** — keep the model loaded between calls to eliminate the ~2–4s cold-start overhead in hook mode
+- **Streaming mode** (`--stream`) for chunked large inputs with incremental output
+- **CoreML backend** — Apple Neural Engine exploration for lower power draw on macOS
+- **JSON/JSONL selective field compression** — score and compress individual fields rather than treating JSON as flat text
+- **Integrations** — Cursor, VS Code extension, Neovim, GitHub Actions
 
 ## License
 
