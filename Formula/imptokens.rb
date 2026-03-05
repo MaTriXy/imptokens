@@ -16,7 +16,7 @@ class Imptokens < Formula
   on_macos do
     on_arm do
       url "https://github.com/nimhar/imptokens/releases/download/v#{version}/imptokens-Darwin-arm64"
-      sha256 "PLACEHOLDER_UPDATE_AFTER_FIRST_RELEASE_ARM64"
+      sha256 "aafdeaf0c56238da26e19e7f2ae40f4940b145b18020caa045d6b5c014b002ae"
     end
 
     on_intel do
