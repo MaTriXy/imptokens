@@ -14,6 +14,8 @@
 
 ![imptokens demo](video/out/Imptokens.gif)
 
+## TL;DR
+One-liner installation:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nimhar/imptokens/main/install.sh | bash
 ```
